@@ -84,8 +84,8 @@ void setup(void) {
 
   server.addHook([](const String & method, const String & url, WiFiClient * client, ESP8266WebServer::ContentTypeFunction contentType) {
     (void)method;      // GET, PUT, ...
-    (void)url;         // example: /root/myfile.html
-    (void)client;      // the webserver tcp client connection
+    (void)url;         // Ejemplo: /root/myfile.html
+    (void)client;      // Conexion TCP cliente
     (void)contentType; // contentType(".html") => "text/html"
     Serial.printf("A useless web hook has passed\n");
     Serial.printf("(this hook is in 0x%08x area (401x=IRAM 402x=FLASH))\n", esp_get_program_counter());
@@ -104,12 +104,9 @@ void setup(void) {
     if (url.startsWith("/dump")) {
       Serial.printf("The dumper web hook is on the run\n");
 
-      // Here the request is not interpreted, so we cannot for sure
-      // swallow the exact amount matching the full request+content,
-      // hence the tcp connection cannot be handled anymore by the
-      // webserver.
+      
 #ifdef STREAMSEND_API
-      // we are lucky
+      
       client->sendAll(Serial, 500);
 #else
       auto last = millis();
@@ -123,21 +120,14 @@ void setup(void) {
         }
       }
 #endif
-      // Two choices: return MUST STOP and webserver will close it
-      //                       (we already have the example with '/fail' hook)
-      // or                  IS GIVEN and webserver will forget it
-      // trying with IS GIVEN and storing it on a dumb WiFiClient.
-      // check the client connection: it should not immediately be closed
-      // (make another '/dump' one to close the first)
+     
+      
       Serial.printf("\nTelling server to forget this connection\n");
       static WiFiClient forgetme = *client; // stop previous one if present and transfer client refcounter
       return ESP8266WebServer::CLIENT_IS_GIVEN;
     }
     return ESP8266WebServer::CLIENT_REQUEST_CAN_CONTINUE;
   });
-
-  // Hook examples
-  /////////////////////////////////////////////////////////
 
   server.begin();
   Serial.println("HTTP server started");
@@ -162,7 +152,6 @@ void loop(void) {
   }
 
 }
-
 
 
 // MANEJADORES DE LINKS
