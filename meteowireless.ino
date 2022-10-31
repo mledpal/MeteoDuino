@@ -299,7 +299,7 @@ void discord() {
 }
 
 void send_discord(String mensaje) {
-  const String discord_webhook = "https://discord.com/api/webhooks/995371444961804490/kZZOPXQXdub5lNdA4j4LUv7xgWDGJtpZNqxwonphQb2yjIWBNf55TKA5hCOHCaz8sC8l";
+  const String discord_webhook = "AQUI_TU_WEBHOOK";
   Discord_Webhook discord;
   discord.begin(discord_webhook);
   discord.send(mensaje);
