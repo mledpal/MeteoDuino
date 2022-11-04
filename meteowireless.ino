@@ -12,8 +12,8 @@
 #include <WiFiClientSecure.h>
 
 #ifndef STASSID
-#define STASSID "IXIUM"
-#define STAPSK  "Mavic2Z00m"
+#define STASSID "TU_RED"
+#define STAPSK  "TU_CONTRASEÑA"
 #endif
 
 #include <Discord_WebHook.h>
