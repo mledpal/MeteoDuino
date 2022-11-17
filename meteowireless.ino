@@ -1,47 +1,59 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
-#include <DHT.h>
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266mDNS.h>
-#include <Adafruit_BMP085.h>
-#include <Wire.h>
-
 #include <WiFiClientSecure.h>
 
-#ifndef STASSID
-#define STASSID "TU_RED"
-#define STAPSK  "TU_CONTRASEÑA"
-#endif
+#include <DHT.h>
+#include <SFE_BMP180.h>
+#include <Wire.h>
 
 #include <Discord_WebHook.h>
+
+#ifndef STASSID
+#define STASSID "IXIUM"
+#define STAPSK  "Mavic2Z00m"
+#endif
 
 const char* ssid = STASSID;
 const char* password = STAPSK;
 
-ESP8266WebServer server(80);
-Adafruit_BMP085 bmp;
 
-uint8_t DHTPin = D3;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+const long utcOffsetInSeconds = 3600;
+
+ESP8266WebServer server(80);
+
+SFE_BMP180 bmp;
+#define ALTITUDE  416.0 // metros 
+
+uint8_t DHTPin = 2;
 #define DHTTYPE DHT11
 DHT dht(DHTPin, DHTTYPE);
 
 const int led = 13;
 
+float datos[7];
 
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);
-const long utcOffsetInSeconds = 7200;
+float temp1, temp2, sensacionTermica, humedad, presion, nivelMar, altura;
 
 //////////// SETUP ////////////
 
-void setup(void) {
+void setup() {
 
-  bmp.begin();
+  if(bmp.begin()){
+    Serial.println("BMP180 Iniciado correctamente");
+  } else {
+    Serial.println("El sensor BMP180 tiene problemas");
+  }
+  
   dht.begin();
-  Serial.begin(115200);
+  Serial.begin(9600);
 
 
   pinMode(led, OUTPUT);
@@ -59,7 +71,7 @@ void setup(void) {
 
   NTPClient timeClient(ntpUDP, "hora.roa.es", utcOffsetInSeconds);
   timeClient.begin();
-  timeClient.setTimeOffset(+7200);
+  timeClient.setTimeOffset(utcOffsetInSeconds);
 
   Serial.println("");
   Serial.print("Connected to ");
@@ -84,8 +96,8 @@ void setup(void) {
 
   server.addHook([](const String & method, const String & url, WiFiClient * client, ESP8266WebServer::ContentTypeFunction contentType) {
     (void)method;      // GET, PUT, ...
-    (void)url;         // Ejemplo: /root/myfile.html
-    (void)client;      // Conexion TCP cliente
+    (void)url;         // example: /root/myfile.html
+    (void)client;      // the webserver tcp client connection
     (void)contentType; // contentType(".html") => "text/html"
     Serial.printf("A useless web hook has passed\n");
     Serial.printf("(this hook is in 0x%08x area (401x=IRAM 402x=FLASH))\n", esp_get_program_counter());
@@ -104,9 +116,12 @@ void setup(void) {
     if (url.startsWith("/dump")) {
       Serial.printf("The dumper web hook is on the run\n");
 
-      
+      // Here the request is not interpreted, so we cannot for sure
+      // swallow the exact amount matching the full request+content,
+      // hence the tcp connection cannot be handled anymore by the
+      // webserver.
 #ifdef STREAMSEND_API
-      
+      // we are lucky
       client->sendAll(Serial, 500);
 #else
       auto last = millis();
@@ -120,14 +135,21 @@ void setup(void) {
         }
       }
 #endif
-     
-      
+      // Two choices: return MUST STOP and webserver will close it
+      //                       (we already have the example with '/fail' hook)
+      // or                  IS GIVEN and webserver will forget it
+      // trying with IS GIVEN and storing it on a dumb WiFiClient.
+      // check the client connection: it should not immediately be closed
+      // (make another '/dump' one to close the first)
       Serial.printf("\nTelling server to forget this connection\n");
       static WiFiClient forgetme = *client; // stop previous one if present and transfer client refcounter
       return ESP8266WebServer::CLIENT_IS_GIVEN;
     }
     return ESP8266WebServer::CLIENT_REQUEST_CAN_CONTINUE;
   });
+
+  // Hook examples
+  /////////////////////////////////////////////////////////
 
   server.begin();
   Serial.println("HTTP server started");
@@ -141,7 +163,7 @@ void loop(void) {
   server.handleClient();
   MDNS.update();
   
-  timeClient.setTimeOffset(+7200);
+  timeClient.setTimeOffset(utcOffsetInSeconds);
   timeClient.update();
 
   int minutos = timeClient.getMinutes();
@@ -150,8 +172,8 @@ void loop(void) {
   if ((minutos==0 || minutos==15 || minutos==30 || minutos==45) && seg==0) {
     discord();
   }
-
 }
+
 
 
 // MANEJADORES DE LINKS
@@ -159,35 +181,28 @@ void handleRoot() {
 
   digitalWrite(led, 1);
 
-  timeClient.setTimeOffset(+7200);
+  timeClient.setTimeOffset(utcOffsetInSeconds);
   timeClient.update();
-
   
   unsigned long epochTime = timeClient.getEpochTime();  
-  String hora = String(timeClient.getFormattedTime());
+  String hora = String(timeClient.getFormattedTime());  
   
-
-  float temp1 = bmp.readTemperature();
-  float temp2 = dht.readTemperature();
-  float humedad = dht.readHumidity();
-  float sensacionTermica = dht.computeHeatIndex(temp2, humedad, false);
-  float presion = bmp.readPressure() / 100;
-  float altura = bmp.readAltitude();
-  float nivelmar = bmp.readSealevelPressure(presion) / 100;
+  leerDatos();
 
   String xml = "<?xml version='1.0' encoding='UTF-8'?>\r\n";
+  
   xml += "<meteorologica id='1'>\r\n";
   xml += "\t<fecha>" + String(epochTime) + "</fecha>\r\n";
   xml += "\t<hora>" + hora + "</hora>\r\n";
   xml += "\t<temperaturas media='" + String((temp1 + temp2) / 2) + "' sensacion='" + String(sensacionTermica, 2) + "' unidad ='ºC' >\r\n";
-  xml += "\t\t<sensor1>" + String(temp1) + "ºC</sensor1>\r\n";
-  xml += "\t\t<sensor2>" + String(temp2) + "ºC</sensor2>\r\n";
+  xml += "\t\t<sensor1>" + String(temp1) + "</sensor1>\r\n";
+  xml += "\t\t<sensor2>" + String(temp2) + "</sensor2>\r\n";
   xml += "\t</temperaturas>\r\n";
-  xml += "\t<presion altura ='" + String(altura, 2) + " m'>\r\n";
-  xml += "\t\t<local>" + String(presion, 0) + " Pa</local>";
-  xml += "\t\t<mar>" + String(nivelmar, 0) + " Pa</mar>\r\n";
+  xml += "\t<presion altura ='" + String(altura, 2) + "'>\r\n";
+  xml += "\t\t<local>" + String(presion, 0) + "</local>";
+  xml += "\t\t<mar>" + String(nivelMar, 0) + "</mar>\r\n";
   xml += "\t</presion>\r\n";
-  xml += "\t<humedad>" + String(humedad, 0) + " %</humedad>\r\n";
+  xml += "\t<humedad>" + String(humedad, 0) + "</humedad>\r\n";
   xml += "</meteorologica>\r\n";
 
 
@@ -195,10 +210,9 @@ void handleRoot() {
 
   server.send(200, "text/xml", xml);
   digitalWrite(led, 0);
-
-
-
 }
+
+
 
 void handleTemp() { // Ruta /meteo
 
@@ -208,10 +222,10 @@ void handleTemp() { // Ruta /meteo
   float temp = dht.readTemperature();
   float hic = dht.computeHeatIndex(temp, humi, false);
 
-  float temp_media = (temp + bmp.readTemperature()) / 2;
-
-
+  leerDatos();
+  
   String cadena = "<!DOCTYPE html>";
+  
   cadena += "<html lang='es'>";
   cadena += "<head>";
   cadena += "<meta charset='UTF-8'>";
@@ -225,14 +239,14 @@ void handleTemp() { // Ruta /meteo
   cadena += "</head>";
   cadena += "<body>";
   cadena += "<table border='1' cellpadding='5' align='center'>";
-  cadena += "<tr><th>Temperatura 1</th><th>Temperatura 2</th><th>Temperatura Media</th><th>Sensación Térmica</th><th>Presión</th><th>Humedad</th><th>Altura Relativa</th></tr>";
-  cadena += "<tr><td>" + String(String(bmp.readTemperature())) + " ºC </td>";
-  cadena += "<td>" + String(String(temp)) + " ºC </td>";
-  cadena += "<td>" + String(temp_media) + " ºC</td>";
-  cadena += "<td>" + String(hic) + " ºC </td>";
-  cadena += "<td>" + String(bmp.readPressure() / 100) + " Pa </td>";
-  cadena += "<td>" + String(humi) + " % </td>";
-  cadena += "<td>" + String(bmp.readAltitude()) + " m. </td>";
+  cadena += "<tr><th>Temperatura 1</th><th>Temperatura 2</th><th>Temperatura Media</th><th>Sensación Térmica</th><th>Presión</th><th>Humedad</th><th>Altura Real</th></tr>";
+  cadena += "<tr><td>" + String(temp1) + " ºC </td>";
+  cadena += "<td>" + String(temp2) + " ºC </td>";
+  cadena += "<td>" + String((temp1+temp2)/2) + " ºC</td>";
+  cadena += "<td>" + String(sensacionTermica) + " ºC </td>";
+  cadena += "<td>" + String(presion) + " Pa </td>";
+  cadena += "<td>" + String(humedad) + " % </td>";
+  cadena += "<td>" + String(altura) + " m. </td>";
   cadena += "</tr></table>";
   cadena += "</body></html>";
 
@@ -258,25 +272,19 @@ void handleNotFound() {
   digitalWrite(led, 0);
 }
 
+
+
 void discord() {
-  timeClient.setTimeOffset(+7200);
+  timeClient.setTimeOffset(utcOffsetInSeconds);
   timeClient.update();
 
   String hora = String(timeClient.getFormattedTime());
 
-  float temp1 = bmp.readTemperature();
-  float temp2 = dht.readTemperature();
-  float tempmed = (temp1+temp2)/2;
-  float humedad = dht.readHumidity();
-  float sensacionTermica = dht.computeHeatIndex(temp2, humedad, false);
-  float presion = bmp.readPressure() / 100;
-  float altura = bmp.readAltitude();
-  float nivelmar = bmp.readSealevelPressure(presion) / 100;
-
-
+  leerDatos();
+  
   String mensaje = "[ Hora: "+ hora +" ] ";
-  mensaje +="[ T1: "+String(temp1,2)+"ºC | T2: " + String(temp2, 2)+ "ºC | ST : " + String(sensacionTermica,2)+"ºC | TM: " + String(tempmed, 2) + " ºC ] ";
-  mensaje +=" [ H: " + String(humedad,0) + "% ]";
+  mensaje +="[ T1: "+String(temp1, 2)+" ºC | T2: " + String(temp2, 2)+ " ºC | ST : " + String(sensacionTermica, 2)+" ºC | TM: " + String(((temp1 + temp2) / 2), 2) + " ºC ] ";
+  mensaje +=" [ H: " + String(humedad, 0) + "% ]";
   mensaje +=" [ P: " + String(presion, 0) + " Pa ] ";
   mensaje +=" [ A: " + String(altura, 2) + " m ] ";
   
@@ -287,10 +295,53 @@ void discord() {
 
 }
 
+
+
 void send_discord(String mensaje) {
-  const String discord_webhook = "AQUI_TU_WEBHOOK";
+  const String discord_webhook = "https://discord.com/api/webhooks/995371444961804490/kZZOPXQXdub5lNdA4j4LUv7xgWDGJtpZNqxwonphQb2yjIWBNf55TKA5hCOHCaz8sC8l";
   Discord_Webhook discord;
   discord.begin(discord_webhook);
   discord.send(mensaje);
   //delay(500);
+}
+
+void leerDatos() {
+  
+  char status;
+  double T1,P,p0,a;
+
+  temp2 = dht.readTemperature();
+  humedad = dht.readHumidity();
+  sensacionTermica = dht.computeHeatIndex(dht.readTemperature(), dht.readHumidity(), false);
+  
+  status = bmp.startTemperature();
+
+  if(status!=0) {
+        
+    delay(status);
+
+    status = bmp.getTemperature(T1);
+
+    status = bmp.startPressure(3);
+
+    if ( status != 0 ) {
+      
+      delay(status);
+
+      status = bmp.getPressure(P,T1);
+
+      if (status != 0) {
+        
+        p0 = bmp.sealevel(P,ALTITUDE); 
+        a = bmp.altitude(P,p0);        
+      }      
+    }
+  }
+  
+  
+  temp1 = T1;
+  presion = P;
+  nivelMar = p0;
+  altura = a;
+
 }
